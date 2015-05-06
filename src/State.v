@@ -12,9 +12,13 @@ Module C.
   Arguments Call {E A} _ _.
 End C.
 
-(*Module Run.
-  Inductive t {E A} (x : C.t E A) 
-End Run.*)
+Module Run.
+  Inductive t {E A} : C.t E A -> Type :=
+  | Ret : forall v, t (C.Ret v)
+  | Call : forall c a h, t (h a) -> t (C.Call c h).
+  Arguments Ret {E A} _.
+  Arguments Call {E A} _ _ _ _.
+End Run.
 
 Module State.
   Module Command.
@@ -45,10 +49,10 @@ Module State.
     Effect.New (Command.t S) Command.answer.
 
   Module Invariant.
-    Inductive t {S A : Type} (s : S) : C.t (E S) A -> Prop :=
-    | Ret : forall v, t s (C.Ret v)
-    | Call : forall c h,
-      t (Command.run_state c s) (h (Command.run_anwser c s)) ->
-      t s (C.Call (E := E S) c h).
+    Inductive t {S A} (s : S) : forall {x : C.t (E S) A}, Run.t x -> Prop :=
+    | Ret : forall v, t s (Run.Ret v)
+    | Call : forall c h run_h_a,
+      t (Command.run_state c s) run_h_a ->
+      t s (Run.Call (E := E S) c (Command.run_anwser c s) h run_h_a).
   End Invariant.
 End State.
