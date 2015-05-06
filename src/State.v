@@ -89,3 +89,41 @@ Module State.
       now apply eval_ok.
   Qed.
 End State.
+
+Module Incr.
+  Module Command.
+    Inductive t : Set :=
+    | Incr : t
+    | Read : t.
+
+    Definition answer (c : t) : Type :=
+      match c with
+      | Incr => unit
+      | Read => nat
+      end.
+
+    Definition run_anwser (c : t) (s : nat) : answer c :=
+      match c with
+      | Incr => tt
+      | Read => s
+      end.
+
+    Definition run_state (c : t) (s : nat) : nat :=
+      match c with
+      | Incr => S s
+      | Read => s
+      end.
+  End Command.
+
+  Definition E : Effect.t :=
+    Effect.New Command.t Command.answer.
+
+  Fixpoint eval {A} (x : C.t E A) (s : nat) : A :=
+    match x with
+    | C.Ret v => v
+    | C.Call c h =>
+      let a := Command.run_anwser c s in
+      let s' := Command.run_state c s in
+      eval (h a) s'
+    end.
+End Incr.
