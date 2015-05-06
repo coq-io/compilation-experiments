@@ -18,6 +18,12 @@ Module Run.
   | Call : forall c a h, t (h a) -> t (C.Call c h).
   Arguments Ret {E A} _.
   Arguments Call {E A} _ _ _ _.
+
+  Fixpoint eval {E A} {x : C.t E A} (r : t x) : A :=
+    match r with
+    | Ret v => v
+    | Call _ _ _ r => eval r
+    end.
 End Run.
 
 Module State.
@@ -55,4 +61,31 @@ Module State.
       t (Command.run_state c s) run_h_a ->
       t s (Run.Call (E := E S) c (Command.run_anwser c s) h run_h_a).
   End Invariant.
+
+  Fixpoint eval {S A} (x : C.t (E S) A) (s : S) : A :=
+    match x with
+    | C.Ret v => v
+    | C.Call c h =>
+      let a := Command.run_anwser c s in
+      let s' := Command.run_state c s in
+      eval (h a) s'
+    end.
+
+  Fixpoint eval_ok {S} {x : C.t (E S) unit} {r : Run.t x} {s : S}
+    (H : Invariant.t s r) : eval x s = Run.eval r.
+    destruct x; simpl.
+    - now inversion_clear H.
+    - refine (
+        match H in Invariant.t _ (x := x) r return
+        match x with
+        | C.Call c h =>
+          eval (h (Command.run_anwser c s)) (Command.run_state c s) = Run.eval r
+        | _ => True
+        end : Prop with
+        | Invariant.Call _ _ _ _ => _
+        | _ => I
+        end).
+      simpl.
+      now apply eval_ok.
+  Qed.
 End State.
