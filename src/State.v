@@ -1,3 +1,7 @@
+Require Import Coq.Lists.List.
+
+Import ListNotations.
+
 Module Effect.
   Record t := New {
     command : Type;
@@ -11,6 +15,27 @@ Module C.
   Arguments Ret {E A} _.
   Arguments Call {E A} _ _.
 End C.
+
+Module Event.
+  Record t (E : Effect.t) : Type := New {
+    c : Effect.command E;
+    a : Effect.answer E c }.
+  Arguments New {E} _ _.
+  Arguments c {E} _.
+  Arguments a {E} _.
+End Event.
+
+Module Trace.
+  Definition t (E : Effect.t) : Type :=
+    list (Event.t E).
+
+  Module Valid.
+    Inductive t {E : Effect.t} {A : Type} : C.t E A -> Trace.t E -> A -> Prop :=
+    | Ret : forall v, t (C.Ret v) [] v
+    | Call : forall c a h trace v, t (h a) trace v ->
+      t (C.Call c h) (Event.New c a :: trace) v.
+  End Valid.
+End Trace.
 
 Module Run.
   Inductive t {E A} : C.t E A -> Type :=
