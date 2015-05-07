@@ -1,20 +1,8 @@
 Require Import Coq.Lists.List.
+Require Import Io.All.
 
 Import ListNotations.
-
-Module Effect.
-  Record t := New {
-    command : Type;
-    answer : command -> Type }.
-End Effect.
-
-Module C.
-  Inductive t (E : Effect.t) (A : Type) : Type :=
-  | Ret : A -> t E A
-  | Call : forall c, (Effect.answer E c -> t E A) -> t E A.
-  Arguments Ret {E A} _.
-  Arguments Call {E A} _ _.
-End C.
+Import C.Notations.
 
 Module Event.
   Record t (E : Effect.t) : Type := New {
@@ -30,32 +18,23 @@ Module Trace.
     list (Event.t E).
 
   Module Valid.
-    Inductive t {E : Effect.t} {A : Type} : C.t E A -> Trace.t E -> A -> Prop :=
-    | Ret : forall v, t (C.Ret v) [] v
-    | Call : forall c a h trace v, t (h a) trace v ->
-      t (C.Call c h) (Event.New c a :: trace) v.
+    Inductive t {E} : forall {A}, C.t E A -> Trace.t E -> A -> Prop :=
+    | Ret : forall A v, t (C.Ret A v) [] v
+    | Call : forall c a,
+      t (C.Call c) [Event.New c a] a
+    | Let : forall A B x trace_x v_x f trace_y v_y,
+      t x trace_x v_x -> t (f v_x) trace_y v_y ->
+      t (C.Let A B x f) (trace_x ++ trace_y) v_y.
   End Valid.
 End Trace.
-
-Module Run.
-  Inductive t {E A} : C.t E A -> Type :=
-  | Ret : forall v, t (C.Ret v)
-  | Call : forall c a h, t (h a) -> t (C.Call c h).
-  Arguments Ret {E A} _.
-  Arguments Call {E A} _ _ _ _.
-
-  Fixpoint eval {E A} {x : C.t E A} (r : t x) : A :=
-    match r with
-    | Ret v => v
-    | Call _ _ _ r => eval r
-    end.
-End Run.
 
 Module State.
   Module Command.
     Inductive t (S : Type) : Type :=
     | Read : t S
     | Write : S -> t S.
+    Arguments Read {S}.
+    Arguments Write {S} _.
 
     Definition answer {S : Type} (c : t S) : Type :=
       match c with
@@ -80,11 +59,11 @@ Module State.
     Effect.New (Command.t S) Command.answer.
 
   Module Invariant.
-    Inductive t {S A} (s : S) : forall {x : C.t (E S) A}, Run.t x -> Prop :=
-    | Ret : forall v, t s (Run.Ret v)
-    | Call : forall c h run_h_a,
-      t (Command.run_state c s) run_h_a ->
-      t s (Run.Call (E := E S) c (Command.run_anwser c s) h run_h_a).
+    Inductive t {S} (s : S) : Trace.t (E S) -> Prop :=
+    | Ret : t s []
+    | Call : forall c trace,
+      t (Command.run_state c s) trace ->
+      t s (Event.New (E := E S) c (Command.run_anwser c s) :: trace).
   End Invariant.
 
   Fixpoint eval {S A} (x : C.t (E S) A) (s : S) : A :=
@@ -96,22 +75,28 @@ Module State.
       eval (h a) s'
     end.
 
-  Fixpoint eval_ok {S} {x : C.t (E S) unit} {r : Run.t x} {s : S}
-    (H : Invariant.t s r) : eval x s = Run.eval r.
+  Fixpoint eval_ok {S A} {x : C.t (E S) A} {s : S} {trace : Trace.t (E S)}
+    {v : A} (H_inv : Invariant.t s trace) (H_trace : Trace.Valid.t x trace v)
+    : eval x s = v.
     destruct x; simpl.
-    - now inversion_clear H.
-    - refine (
-        match H in Invariant.t _ (x := x) r return
-        match x with
-        | C.Call c h =>
-          eval (h (Command.run_anwser c s)) (Command.run_state c s) = Run.eval r
-        | _ => True
-        end : Prop with
-        | Invariant.Call _ _ _ _ => _
+    - now inversion_clear H_trace.
+    - generalize H_inv; clear H_inv.
+      refine (
+        match H_trace in Trace.Valid.t x trace v return
+          match x with
+          | C.Call c t =>
+            Invariant.t s trace ->
+            eval (t (Command.run_anwser c s)) (Command.run_state c s) = v
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Call _ _ _ _ _ _ => _
         | _ => I
         end).
-      simpl.
-      now apply eval_ok.
+      intro H_inv.
+      apply eval_ok with (trace := trace0).
+      + now inversion H_inv.
+      + assert (H_a : a = Command.run_anwser c0 s) by now inversion_clear H_inv.
+        now rewrite <- H_a.
   Qed.
 End State.
 
@@ -138,10 +123,29 @@ Module Incr.
       | Incr => S s
       | Read => s
       end.
+
+    Definition run (c : t) : C.t (State.E nat) (answer c) :=
+      match c with
+      | Incr =>
+        C.Call (E := State.E nat) State.Command.Read (fun s =>
+        C.Call (E := State.E nat) (State.Command.Write (S s)) (fun _ =>
+        C.Ret tt))
+      | Read =>
+        C.Call (E := State.E nat) State.Command.Read (fun s =>
+        C.Ret s)
+      end.
   End Command.
 
   Definition E : Effect.t :=
     Effect.New Command.t Command.answer.
+
+  Module Invariant.
+    Inductive t (s : nat) : Trace.t E -> Prop :=
+    | Ret : t s []
+    | Call : forall c trace,
+      t (Command.run_state c s) trace ->
+      t s (Event.New (E := E) c (Command.run_anwser c s) :: trace).
+  End Invariant.
 
   Fixpoint eval {A} (x : C.t E A) (s : nat) : A :=
     match x with
@@ -150,5 +154,11 @@ Module Incr.
       let a := Command.run_anwser c s in
       let s' := Command.run_state c s in
       eval (h a) s'
+    end.
+
+  Fixpoint run {A} (x : C.t E A) : C.t (State.E nat) A :=
+    match x with
+    | C.Ret v => C.Ret v
+    | C.Call c h => C.Call (Command)
     end.
 End Incr.
