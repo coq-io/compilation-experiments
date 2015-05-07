@@ -1,30 +1,26 @@
 Require Import Coq.Lists.List.
+Require Import ErrorHandlers.All.
 Require Import Io.All.
 
 Import ListNotations.
 Import C.Notations.
 
-Module Event.
-  Record t (E : Effect.t) : Type := New {
-    c : Effect.command E;
-    a : Effect.answer E c }.
-  Arguments New {E} _ _.
-  Arguments c {E} _.
-  Arguments a {E} _.
-End Event.
-
 Module Trace.
-  Definition t (E : Effect.t) : Type :=
-    list (Event.t E).
+  Inductive t (E : Effect.t) : Type :=
+  | Ret : t E
+  | Call : forall c, Effect.answer E c -> t E
+  | Let : t E -> t E -> t E.
+  Arguments Ret {E}.
+  Arguments Call {E} _ _.
+  Arguments Let {E} _ _.
 
   Module Valid.
     Inductive t {E} : forall {A}, C.t E A -> Trace.t E -> A -> Prop :=
-    | Ret : forall A v, t (C.Ret A v) [] v
-    | Call : forall c a,
-      t (C.Call c) [Event.New c a] a
+    | Ret : forall A v, t (C.Ret A v) Trace.Ret v
+    | Call : forall c a, t (C.Call c) (Trace.Call c a) a
     | Let : forall A B x trace_x v_x f trace_y v_y,
       t x trace_x v_x -> t (f v_x) trace_y v_y ->
-      t (C.Let A B x f) (trace_x ++ trace_y) v_y.
+      t (C.Let A B x f) (Trace.Let trace_x trace_y) v_y.
   End Valid.
 End Trace.
 
@@ -59,26 +55,166 @@ Module State.
     Effect.New (Command.t S) Command.answer.
 
   Module Invariant.
-    Inductive t {S} (s : S) : Trace.t (E S) -> Prop :=
-    | Ret : t s []
-    | Call : forall c trace,
-      t (Command.run_state c s) trace ->
-      t s (Event.New (E := E S) c (Command.run_anwser c s) :: trace).
+    Inductive t {S} (s : S) : Trace.t (E S) -> S -> Prop :=
+    | Ret : t s Trace.Ret s
+    | Call : forall (c : Effect.command (E S)),
+      t s (Trace.Call c (Command.run_anwser c s)) (Command.run_state c s)
+    | Let : forall trace_x s_x trace_y s_y,
+      t s trace_x s_x -> t s_x trace_y s_y ->
+      t s (Trace.Let trace_x trace_y) s_y.
   End Invariant.
 
-  Fixpoint eval {S A} (x : C.t (E S) A) (s : S) : A :=
+  Fixpoint eval {S A} (s : S) (x : C.t (E S) A) : option (A * S) :=
     match x with
-    | C.Ret v => v
-    | C.Call c h =>
-      let a := Command.run_anwser c s in
-      let s' := Command.run_state c s in
-      eval (h a) s'
+    | C.Ret _ v => Some (v, s)
+    | C.Call c => Some (Command.run_anwser c s, Command.run_state c s)
+    | C.Let _ _ x f =>
+      Option.bind (eval s x) (fun r =>
+      let (v_x, s_x) := r in
+      eval s_x (f v_x))
+    | C.Choose _ _ _ | C.Join _ _ _ _ => None
     end.
 
-  Fixpoint eval_ok {S A} {x : C.t (E S) A} {s : S} {trace : Trace.t (E S)}
-    {v : A} (H_inv : Invariant.t s trace) (H_trace : Trace.Valid.t x trace v)
-    : eval x s = v.
+  Require Import Coq.Logic.JMeq.
+
+  Fixpoint eval_ok {S A} {s : S} {x : C.t (E S) A} {s' trace v}
+    (H_trace : Trace.Valid.t x trace v) (H_inv : Invariant.t s trace s')
+    : eq (eval s x) (Some (v, s')).
+    destruct trace.
+    - inversion_clear H_inv.
+      exact (
+        match H_trace in Trace.Valid.t x trace v return
+          match trace with
+          | Trace.Ret => eq (eval s' x) (Some (v, s'))
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Ret _ _ => eq_refl
+        | _ => I
+        end).
+    - destruct x; [inversion H_trace | | inversion H_trace | inversion H_trace | inversion H_trace].
+      simpl.
+      assert (Command.run_state command s = s').
+      inversion_clear H_inv.
+      now inversion_clear H_trace.
+      assert (JMeq (Command.run_anwser command s) v).
+      generalize H_trace.
+      refine (
+        match H_trace in Trace.Valid.t x trace v return
+          match x with
+          | C.Call command =>
+            match trace with
+            | Trace.Call c a =>
+              Trace.Valid.t (C.Call command) (Trace.Call c a) v ->
+              JMeq (Command.run_anwser command s) v
+            | _ => False
+            end
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Call _ _ => _
+        | _ => I
+        end).
+      assert (command = c).
+      refine (
+        match H_trace in Trace.Valid.t x trace _ return
+          match x with
+          | C.Call command =>
+            match trace with
+            | Trace.Call c _ => command = c
+            | _ => False
+            end
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Call _ _ => eq_refl
+        | _ => I
+        end).
+      refine (
+        match H_trace in Trace.Valid.t _ trace _ return
+          match trace with
+          | Trace.Call c a => JMeq (Command.run_anwser c s) v
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Call _ _ => _
+        | _ => I
+        end).
+      refine (
+        match H_inv in Invariant.t _ trace _ return
+          match trace with
+          | Trace.Call c a => JMeq (Command.run_anwser command s) v
+          | _ => True
+          end : Prop with
+        | Invariant.Call _ => _
+        | _ => I
+        end).
+              
+              match trace with
+              | Trace.Call c a =>
+                JMeq (eval s (C.Call command)) (Some (a, Command.run_state c s))
+              | _ => False
+              end
+            | _ => True
+            end : Prop with
+        | Trace.Valid.Call _ _ => _
+        | _ => I
+        end).
+      inversion_clear H_trace.
+      assert (H_c : command = c) by now inversion_clear H_trace.
+      assert (JMeq (eval s (C.Call command)) (Some (v, Command.run_state c s))).
+      assert (JMeq () v).
+      refine (
+        match H_trace in Trace.Valid.t x trace v return
+          match x with
+          | C.Call command =>
+            match trace with
+            | Trace.Call c a =>
+              JMeq (eval s (C.Call command)) (Some (a, Command.run_state c s))
+            | _ => False
+            end
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Call _ _ => _
+        | _ => I
+        end).
+      simpl.
+      assert (JMeq a v).
+      refine (
+        match H_trace in Trace.Valid.t x trace v return
+          match trace with
+          | Trace.Call c a => JMeq a v
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Call _ _ => JMeq_refl
+        | _ => I
+        end).
+      refine (
+        match H_trace in Trace.Valid.t x trace v return
+          match x with
+          | C.Call command =>
+            match trace with
+            | Trace.Call c a =>
+              Some (Command.run_anwser command s, Command.run_state command s) =
+              Some (v, Command.run_state c s)
+            | _ => False
+            end
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Call _ _ => _
+        | _ => I
+        end).
+      inversion H_trace.
+    inversion H_trace.
     destruct x; simpl.
+    - refine (
+        match H_trace in Trace.Valid.t x trace v return
+          match x with
+          | C.Ret _ x => Invariant.t s trace s' -> Some (x, s) = Some (v, s')
+          | _ => True
+          end : Prop with
+        | Trace.Valid.Ret _ _ => _
+        | _ => I
+        end).
+    ; inversion_clear H_trace; intro H_inv.
+    - inversion_clear H_inv.
+    (*destruct x; simpl.
     - now inversion_clear H_trace.
     - generalize H_inv; clear H_inv.
       refine (
@@ -96,11 +232,11 @@ Module State.
       apply eval_ok with (trace := trace0).
       + now inversion H_inv.
       + assert (H_a : a = Command.run_anwser c0 s) by now inversion_clear H_inv.
-        now rewrite <- H_a.
+        now rewrite <- H_a.*)
   Qed.
 End State.
 
-Module Incr.
+(*Module Incr.
   Module Command.
     Inductive t : Set :=
     | Incr : t
@@ -161,4 +297,4 @@ Module Incr.
     | C.Ret v => C.Ret v
     | C.Call c h => C.Call (Command)
     end.
-End Incr.
+End Incr.*)
