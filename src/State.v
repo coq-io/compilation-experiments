@@ -9,10 +9,14 @@ Module Trace.
   Inductive t (E : Effect.t) : Type :=
   | Ret : t E
   | Call : forall c, Effect.answer E c -> t E
-  | Let : t E -> t E -> t E.
+  | Let : t E -> t E -> t E
+  | Choose : t E + t E -> t E
+  | Join : t E -> t E -> t E.
   Arguments Ret {E}.
   Arguments Call {E} _ _.
   Arguments Let {E} _ _.
+  Arguments Choose {E} _.
+  Arguments Join {E} _ _.
 
   Module Valid.
     Inductive t {E} : forall {A}, C.t E A -> Trace.t E -> A -> Prop :=
@@ -20,7 +24,16 @@ Module Trace.
     | Call : forall c a, t (C.Call c) (Trace.Call c a) a
     | Let : forall A B x trace_x v_x f trace_y v_y,
       t x trace_x v_x -> t (f v_x) trace_y v_y ->
-      t (C.Let A B x f) (Trace.Let trace_x trace_y) v_y.
+      t (C.Let A B x f) (Trace.Let trace_x trace_y) v_y
+    | ChooseLeft : forall A x1 trace_x1 v_x1 x2,
+      t x1 trace_x1 v_x1 ->
+      t (C.Choose A x1 x2) (Trace.Choose (inl trace_x1)) v_x1
+    | ChooseRight : forall A x1 x2 trace_x2 v_x2,
+      t x2 trace_x2 v_x2 ->
+      t (C.Choose A x1 x2) (Trace.Choose (inr trace_x2)) v_x2
+    | Join : forall A B x trace_x v_x y trace_y v_y,
+      t x trace_x v_x -> t y trace_y v_y ->
+      t (C.Join A B x y) (Trace.Join trace_x trace_y) (v_x, v_y).
   End Valid.
 End Trace.
 
